@@ -40,6 +40,9 @@ def authenticate_user(db: Session, email: str, password: str) -> Optional[User]:
         return None
     if not verify_password(password, user.hashed_password):
         return None
+    # 이메일 인증이 완료된 사용자만 로그인 허용
+    if not user.email_verified:
+        return None
     return user
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
@@ -78,3 +81,4 @@ async def get_current_active_user(current_user: User = Depends(get_current_user)
     if not current_user.is_active:
         raise HTTPException(status_code=400, detail="Inactive user")
     return current_user
+ 

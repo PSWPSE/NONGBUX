@@ -94,6 +94,11 @@ class EmailVerificationRequest(BaseModel):
 class EmailVerification(BaseModel):
     token: str
 
+class EmailVerificationStatus(BaseModel):
+    email: EmailStr
+    email_verified: bool
+    registration_date: Optional[str] = None
+
 # API Key schemas
 class ApiKeySet(BaseModel):
     api_key: str

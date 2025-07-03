@@ -11,8 +11,9 @@ from ..models.models import User
 from ..schemas.schemas import (
     Token, UserCreate, User as UserSchema, UserProfile, UserUpdate,
     PasswordChange, PasswordResetRequest, PasswordReset,
-    EmailVerificationRequest, EmailVerification
+    EmailVerificationRequest, EmailVerification, EmailVerificationStatus
 )
+from ..services.email_service import send_verification_email, send_password_reset_email, send_welcome_email
 
 router = APIRouter()
 
@@ -48,8 +49,12 @@ async def register_user(user: UserCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(db_user)
     
-    # TODO: 이메일 인증 메일 발송 구현
-    # send_verification_email(user.email, verification_token)
+    # 이메일 인증 메일 발송
+    try:
+        await send_verification_email(user.email, verification_token, user.full_name or "사용자")
+    except Exception as e:
+        # 이메일 발송 실패해도 회원가입은 완료
+        print(f"이메일 발송 실패: {e}")
     
     return db_user
 
@@ -59,12 +64,21 @@ async def login_for_access_token(
     db: Session = Depends(get_db)
 ):
     """Login and get access token."""
-    user = authenticate_user(db, form_data.username, form_data.password)
-    if not user:
+    # 먼저 사용자 존재 여부와 비밀번호 확인
+    user = get_user_by_email(db, form_data.username)
+    if not user or not verify_password(form_data.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="이메일 또는 비밀번호가 올바르지 않습니다.",
             headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    # 이메일 인증이 완료되지 않은 경우
+    if not user.email_verified:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="이메일 인증이 필요합니다. 이메일을 확인하여 계정을 인증해주세요.",
+            headers={"X-Email-Verification-Required": "true"},
         )
     
     # 로그인 통계 업데이트
@@ -149,8 +163,11 @@ async def request_password_reset(
     user.password_reset_expires = datetime.utcnow() + timedelta(hours=1)  # 1시간 유효
     db.commit()
     
-    # TODO: 비밀번호 재설정 이메일 발송 구현
-    # send_password_reset_email(user.email, reset_token)
+    # 비밀번호 재설정 이메일 발송
+    try:
+        await send_password_reset_email(user.email, reset_token, user.full_name)
+    except Exception as e:
+        print(f"비밀번호 재설정 이메일 발송 실패: {e}")
     
     return {"message": "비밀번호 재설정 이메일을 발송했습니다."}
 
@@ -201,7 +218,32 @@ async def verify_email(
     user.updated_at = datetime.utcnow()
     db.commit()
     
-    return {"message": "이메일이 성공적으로 인증되었습니다."}
+    # 환영 이메일 발송
+    try:
+        await send_welcome_email(user.email, user.full_name or "사용자")
+    except Exception as e:
+        print(f"환영 이메일 발송 실패: {e}")
+    
+    return {"message": "이메일 인증이 완료되었습니다!", "email_verified": True}
+
+@router.get("/check-verification-status/{email}", response_model=EmailVerificationStatus)
+async def check_verification_status(
+    email: str,
+    db: Session = Depends(get_db)
+):
+    """Check email verification status for a user."""
+    user = get_user_by_email(db, email=email)
+    if not user:
+        raise HTTPException(
+            status_code=404,
+            detail="사용자를 찾을 수 없습니다."
+        )
+    
+    return {
+        "email": user.email,
+        "email_verified": user.email_verified,
+        "registration_date": user.created_at.isoformat() if user.created_at else None
+    }
 
 @router.post("/resend-verification")
 async def resend_verification_email(
@@ -211,26 +253,24 @@ async def resend_verification_email(
     """Resend email verification."""
     user = get_user_by_email(db, email=request.email)
     if not user:
-        raise HTTPException(
-            status_code=404,
-            detail="사용자를 찾을 수 없습니다."
-        )
+        # 보안상 사용자 존재 여부를 노출하지 않음
+        return {"message": "인증 이메일을 발송했습니다."}
     
     if user.email_verified:
-        raise HTTPException(
-            status_code=400,
-            detail="이미 인증된 이메일입니다."
-        )
+        return {"message": "이미 인증된 계정입니다."}
     
-    # Generate new verification token
+    # 새로운 인증 토큰 생성
     verification_token = secrets.token_urlsafe(32)
     user.email_verification_token = verification_token
     db.commit()
     
-    # TODO: 이메일 인증 메일 재발송 구현
-    # send_verification_email(user.email, verification_token)
+    # 인증 이메일 재발송
+    try:
+        await send_verification_email(user.email, verification_token, user.full_name or "사용자")
+    except Exception as e:
+        print(f"인증 이메일 발송 실패: {e}")
     
-    return {"message": "인증 이메일을 재발송했습니다."}
+    return {"message": "인증 이메일을 발송했습니다."}
 
 @router.delete("/account")
 async def delete_account(
@@ -243,3 +283,32 @@ async def delete_account(
     db.commit()
     
     return {"message": "계정이 성공적으로 삭제되었습니다."}
+
+@router.post("/dev-verify-email/{email}")
+async def dev_verify_email(
+    email: str,
+    db: Session = Depends(get_db)
+):
+    """Development only: Verify email without token (for testing)."""
+    user = get_user_by_email(db, email=email)
+    if not user:
+        raise HTTPException(
+            status_code=404,
+            detail="사용자를 찾을 수 없습니다."
+        )
+    
+    if user.email_verified:
+        return {"message": "이미 인증된 계정입니다.", "email_verified": True}
+    
+    user.email_verified = True
+    user.email_verification_token = None
+    user.updated_at = datetime.utcnow()
+    db.commit()
+    
+    # 환영 이메일 발송
+    try:
+        await send_welcome_email(user.email, user.full_name or "사용자")
+    except Exception as e:
+        print(f"환영 이메일 발송 실패: {e}")
+    
+    return {"message": "개발 환경에서 이메일 인증이 완료되었습니다!", "email_verified": True}

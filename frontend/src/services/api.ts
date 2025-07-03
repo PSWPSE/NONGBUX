@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const API_BASE_URL = 'http://localhost:8003';
+const API_BASE_URL = 'http://localhost:8000';
 
 const api = axios.create({
   baseURL: API_BASE_URL,
@@ -83,6 +83,14 @@ export interface PasswordReset {
   new_password: string;
 }
 
+export interface EmailVerificationRequest {
+  email: string;
+}
+
+export interface EmailVerification {
+  token: string;
+}
+
 // Auth API functions
 export const login = async (data: LoginData) => {
   const formData = new FormData();
@@ -129,6 +137,16 @@ export const resetPassword = async (data: PasswordReset) => {
 
 export const deleteAccount = async () => {
   const response = await api.delete('/api/auth/account');
+  return response.data;
+};
+
+export const verifyEmail = async (data: EmailVerification) => {
+  const response = await api.post('/api/auth/verify-email', data);
+  return response.data;
+};
+
+export const resendVerificationEmail = async (data: EmailVerificationRequest) => {
+  const response = await api.post('/api/auth/resend-verification', data);
   return response.data;
 };
 
@@ -182,6 +200,12 @@ export const setApiKey = async (apiKey: string) => {
 
 export const deleteApiKey = async () => {
   const response = await api.delete('/api/settings/api-key');
+  return response.data;
+};
+
+// Email verification status check
+export const checkVerificationStatus = async (email: string) => {
+  const response = await api.get(`/api/auth/check-verification-status/${email}`);
   return response.data;
 };
 
